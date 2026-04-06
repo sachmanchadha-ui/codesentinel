@@ -1,0 +1,32 @@
+name: codesentinel
+version: "0.1.0"
+description: "Automated code review RL environment. An LLM agent reviews real-world code snippets, identifies planted bugs, classifies severity, and suggests fixes. Graded deterministically against ground truth."
+author: sachman09
+hf_space: sachman09/codesentinel
+tasks:
+  - id: easy_review
+    difficulty: easy
+    description: "Python leaderboard module with 2 planted bugs — off-by-one error and missing null guard"
+    max_steps: 3
+  - id: medium_review
+    difficulty: medium
+    description: "Node.js async wallet update with race condition and swallowed exception"
+    max_steps: 3
+  - id: hard_review
+    difficulty: hard
+    description: "Python Flask admin API with SQL injection, missing auth, and type cast bug"
+    max_steps: 3
+action_space:
+  type: CodeReviewAction
+  description: "request_context to get more info, submit_findings to submit bug report with line ranges, severities, and descriptions"
+observation_space:
+  type: CodeReviewObservation
+  description: "Code snippet, task description, optional context, step counter, done flag, reward"
+reward_range: [0.0, 1.0]
+env_vars:
+  - name: API_BASE_URL
+    description: "OpenAI-compatible API endpoint (e.g. https://openrouter.ai/api/v1)"
+  - name: MODEL_NAME
+    description: "Model identifier (e.g. openai/gpt-oss-120b:free)"
+  - name: HF_TOKEN
+    description: "Hugging Face or OpenRouter API key"
