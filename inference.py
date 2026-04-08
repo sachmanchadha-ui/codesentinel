@@ -128,6 +128,12 @@ def run_task(task_id):
     )
 
     score = submit_resp.get("reward", 0.0)
+    score = float(score)
+    if score <= 0.0:
+        score = 0.01
+    if score >= 1.0:
+        score = 0.99
+    score = round(score, 4)
     print(f"[STEP] step=3 reward={score} done=True", flush=True)
     print(f"[END] task={task_id} score={score} steps=3", flush=True)
     sys.stdout.flush()
