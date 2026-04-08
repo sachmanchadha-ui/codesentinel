@@ -153,6 +153,10 @@ def grade(task_id: str, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     # final_score = round(min(total_score, 1.0), 2)
     final_score = round(min(total_score, 1.0), 2)
+    if final_score <= 0.0:
+        final_score = 0.01
+    if final_score >= 1.0:
+        final_score = 0.99
     # Return: {"score": final_score, "bugs_found": len(matched_bug_ids), "bugs_total": len(planted_bugs), "breakdown": breakdown}
     return {
         "score": final_score,
