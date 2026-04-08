@@ -108,20 +108,18 @@ def parse_llm_response(response_text: str) -> CodeReviewAction:
 
 
 def run_task(client: CodeSentinelClient, task_id: str, llm: OpenAI) -> dict:
-    """Run a single task with the LLM agent."""
-    print(f"\n--- Running task: {task_id} ---")
-    obs = client.reset(task_id=task_id)
-    print(f"Task loaded. Steps allowed: {obs.max_steps}")
+    print(f"[START] task={task_id}", flush=True)
 
-    # Step 1: Request context first (use 1 step for context, then submit)
+    obs = client.reset(task_id=task_id)
+    print(f"[STEP] step=1 reward=0.0 done=False", flush=True)
+
     context_action = CodeReviewAction(
         action_type="request_context",
         context_question="What is the production context and any known constraints for this code?",
     )
     obs = client.step(context_action)
-    print(f"Context received: {str(obs.additional_context)[:100]}...")
+    print(f"[STEP] step=2 reward={obs.reward} done={obs.done}", flush=True)
 
-    # Step 2: Build prompt with context and call LLM
     prompt = build_review_prompt(obs)
     try:
         response = llm.chat.completions.create(
@@ -134,17 +132,16 @@ def run_task(client: CodeSentinelClient, task_id: str, llm: OpenAI) -> dict:
             max_tokens=1500,
         )
         response_text = response.choices[0].message.content
-        print(f"LLM response received ({len(response_text)} chars)")
     except Exception as e:
-        print(f"LLM call failed: {e}")
-        response_text = '{"action_type": "submit_findings", "findings": []}'
+        print(f"[STEP] step=3 reward=0.0 done=True", flush=True)
+        print(f"[END] task={task_id} score=0.0 steps=3", flush=True)
+        return {"task_id": task_id, "score": 0.0, "message": str(e)}
 
     action = parse_llm_response(response_text)
-    print(f"Parsed {len(action.findings or [])} findings")
-
-    # Step 3: Submit
     obs = client.step(action)
-    print(f"Score: {obs.reward} | {obs.message}")
+    print(f"[STEP] step=3 reward={obs.reward} done={obs.done}", flush=True)
+    print(f"[END] task={task_id} score={obs.reward} steps=3", flush=True)
+
     return {"task_id": task_id, "score": obs.reward, "message": obs.message}
 
 
