@@ -33,7 +33,7 @@ class ResetRequest(BaseModel):
 
 class StepRequest(BaseModel):
     session_id: str = "default"
-    action: dict
+    action: dict = {}
 
 
 @app.get("/")
@@ -49,7 +49,9 @@ async def health():
 
 
 @app.post("/reset")
-async def reset_endpoint(request: ResetRequest):
+async def reset(request: Optional[ResetRequest] = None):
+    if request is None:
+        request = ResetRequest()
     env = get_or_create_session(request.session_id)
     obs = env.reset(task_id=request.task_id)
     return obs.model_dump()
@@ -131,7 +133,11 @@ async def startup():
     )
 
 
-if __name__ == "__main__":
+def main():
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
+    main()

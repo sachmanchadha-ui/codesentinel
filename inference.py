@@ -1,26 +1,22 @@
 import os
+import sys
 import json
 import time
 from openai import OpenAI
-from client import CodeSentinelClient
-from models import CodeReviewAction, Finding
 
-# ENV VAR LOADING (at top, before any functions)
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://openrouter.ai/api/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "openai/gpt-oss-120b:free")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 SERVER_URL = os.environ.get("SERVER_URL", "http://localhost:7860")
 
-# LLM CLIENT SETUP
 llm = OpenAI(
     base_url=API_BASE_URL,
     api_key=HF_TOKEN if HF_TOKEN else "no-key-needed",
 )
 
-# SYSTEM PROMPT CONSTANT
-SYSTEM_PROMPT = """You are CodeSentinel, an expert security-focused code reviewer. Your job is to find bugs, vulnerabilities, and logic errors in code snippets.
+SYSTEM_PROMPT = """You are CodeSentinel, an expert security-focused code reviewer. Find ALL bugs in the code.
 
-When reviewing code, you MUST output a JSON object with this exact structure:
+Output ONLY a JSON object with this exact structure, no markdown, no extra text:
 {
   "action_type": "submit_findings",
   "findings": [
@@ -28,99 +24,80 @@ When reviewing code, you MUST output a JSON object with this exact structure:
       "line_range": "LINE_NUMBER or START-END",
       "description": "Clear explanation of the bug and its impact",
       "severity": "P0, P1, P2, or P3",
-      "suggested_fix": "Brief suggested fix"
+      "suggested_fix": "Brief fix"
     }
   ]
 }
 
-Severity guide:
-- P0: Critical — security vulnerability, data loss, authentication bypass
-- P1: High — race condition, data corruption, broken core functionality  
-- P2: Medium — incorrect logic, missing null check, wrong output
-- P3: Low — style issue, minor inefficiency
-
-Rules:
-- Report ALL bugs you find, even minor ones
-- Be specific about line numbers
-- severity field must be exactly P0, P1, P2, or P3
-- Output ONLY valid JSON, no markdown, no explanation outside the JSON"""
+Severity: P0=security/auth/data loss, P1=race condition/corruption, P2=logic error/null check/off-by-one, P3=minor
+Output ONLY valid JSON."""
 
 
-def build_review_prompt(obs) -> str:
-    """Build a prompt for the LLM based on the observation."""
-    return f"""Task description:
-{obs.task_description}
-
-Code to review:
-```
-{obs.code_snippet}
-```
-
-Additional context:
-{obs.additional_context if obs.additional_context else "None provided"}
-
-Analyze the code carefully. Find all bugs. Output your findings as JSON."""
+def build_review_prompt(code_snippet, task_description, additional_context):
+    return f"Task:\n{task_description}\n\nCode:\n```\n{code_snippet}\n```\n\nContext:\n{additional_context or 'None'}\n\nFind all bugs. Output JSON only."
 
 
-def parse_llm_response(response_text: str) -> CodeReviewAction:
-    """Parse the LLM response into a CodeReviewAction."""
-    # Strip response_text of whitespace
-    response_text = response_text.strip()
-
-    # Try json.loads(response_text) directly
+def parse_llm_response(text):
+    text = text.strip()
     try:
-        parsed = json.loads(response_text)
-    except json.JSONDecodeError:
-        # Try to find JSON between first { and last }
-        start = response_text.find("{")
-        end = response_text.rfind("}")
-        if start != -1 and end != -1 and start < end:
-            json_str = response_text[start : end + 1]
-            try:
-                parsed = json.loads(json_str)
-            except json.JSONDecodeError:
-                # If parsing still fails: return empty findings
-                return CodeReviewAction(action_type="submit_findings", findings=[])
-        else:
-            # If parsing still fails: return empty findings
-            return CodeReviewAction(action_type="submit_findings", findings=[])
-
-    # From parsed dict:
-    action_type = parsed.get("action_type", "submit_findings")
-    raw_findings = parsed.get("findings", [])
-    findings = []
-
-    # For each f in raw_findings:
-    for f in raw_findings:
-        try:
-            findings.append(
-                Finding(
-                    line_range=str(f.get("line_range", "0")),
-                    description=f.get("description", ""),
-                    severity=f.get("severity", "P3"),
-                    suggested_fix=f.get("suggested_fix", None),
-                )
-            )
-        except Exception:
-            continue  # Skip invalid findings
-
-    return CodeReviewAction(action_type="submit_findings", findings=findings)
+        return json.loads(text)
+    except:
+        pass
+    try:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            return json.loads(text[start:end])
+    except:
+        pass
+    return {"action_type": "submit_findings", "findings": []}
 
 
-def run_task(client: CodeSentinelClient, task_id: str, llm: OpenAI) -> dict:
+def call_server(method, path, **kwargs):
+    import urllib.request
+    import urllib.error
+
+    url = SERVER_URL.rstrip("/") + path
+    data = json.dumps(kwargs.get("json", {})).encode()
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def run_task(task_id):
     print(f"[START] task={task_id}", flush=True)
+    sys.stdout.flush()
 
-    obs = client.reset(task_id=task_id)
-    print(f"[STEP] step=1 reward=0.0 done=False", flush=True)
-
-    context_action = CodeReviewAction(
-        action_type="request_context",
-        context_question="What is the production context and any known constraints for this code?",
+    obs = call_server(
+        "POST", "/reset", json={"session_id": task_id, "task_id": task_id}
     )
-    obs = client.step(context_action)
-    print(f"[STEP] step=2 reward={obs.reward} done={obs.done}", flush=True)
+    print(f"[STEP] step=1 reward=0.0 done=False", flush=True)
+    sys.stdout.flush()
 
-    prompt = build_review_prompt(obs)
+    context_resp = call_server(
+        "POST",
+        "/step",
+        json={
+            "session_id": task_id,
+            "action": {
+                "action_type": "request_context",
+                "context_question": "What is the production context?",
+            },
+        },
+    )
+    print(f"[STEP] step=2 reward=0.0 done=False", flush=True)
+    sys.stdout.flush()
+
+    code_snippet = obs.get("code_snippet", "")
+    task_description = obs.get("task_description", "")
+    additional_context = context_resp.get("additional_context", "")
+
+    prompt = build_review_prompt(code_snippet, task_description, additional_context)
+
     try:
         response = llm.chat.completions.create(
             model=MODEL_NAME,
@@ -135,46 +112,44 @@ def run_task(client: CodeSentinelClient, task_id: str, llm: OpenAI) -> dict:
     except Exception as e:
         print(f"[STEP] step=3 reward=0.0 done=True", flush=True)
         print(f"[END] task={task_id} score=0.0 steps=3", flush=True)
-        return {"task_id": task_id, "score": 0.0, "message": str(e)}
+        sys.stdout.flush()
+        return 0.0
 
-    action = parse_llm_response(response_text)
-    obs = client.step(action)
-    print(f"[STEP] step=3 reward={obs.reward} done={obs.done}", flush=True)
-    print(f"[END] task={task_id} score={obs.reward} steps=3", flush=True)
+    parsed = parse_llm_response(response_text)
+    findings = parsed.get("findings", [])
 
-    return {"task_id": task_id, "score": obs.reward, "message": obs.message}
+    submit_resp = call_server(
+        "POST",
+        "/step",
+        json={
+            "session_id": task_id,
+            "action": {"action_type": "submit_findings", "findings": findings},
+        },
+    )
+
+    score = submit_resp.get("reward", 0.0)
+    print(f"[STEP] step=3 reward={score} done=True", flush=True)
+    print(f"[END] task={task_id} score={score} steps=3", flush=True)
+    sys.stdout.flush()
+    return score
 
 
 if __name__ == "__main__":
-    print("CodeSentinel Inference Script")
-    print(f"Model: {MODEL_NAME}")
-    print(f"Server: {SERVER_URL}")
-    print(f"API: {API_BASE_URL}")
+    print(f"[START] task=codesentinel_eval", flush=True)
+    sys.stdout.flush()
 
-    client = CodeSentinelClient(base_url=SERVER_URL)
-
-    # Health check
-    if not client.health():
-        print("ERROR: Server not reachable. Start it with: python server/app.py")
-        exit(1)
-
-    print("Server is healthy. Starting evaluation...")
-    start_time = time.time()
-
-    results = []
+    scores = {}
     for task_id in ["easy_review", "medium_review", "hard_review"]:
-        result = run_task(client, task_id, llm)
-        results.append(result)
-        time.sleep(2)  # Avoid rate limiting
+        score = run_task(task_id)
+        scores[task_id] = score
+        time.sleep(1)
 
-    print("\n========== FINAL RESULTS ==========")
-    total = 0.0
-    for r in results:
-        print(f"{r['task_id']}: {r['score']}")
-        total += r["score"]
-    avg = round(total / len(results), 3)
-    print(f"Average score: {avg}")
-    print(f"Total time: {round(time.time() - start_time, 1)}s")
-    print("====================================")
+    avg = round(sum(scores.values()) / len(scores), 3)
+    print(f"[END] task=codesentinel_eval score={avg} steps=9", flush=True)
+    sys.stdout.flush()
 
-    client.close()
+    print("\n========== FINAL RESULTS ==========", flush=True)
+    for k, v in scores.items():
+        print(f"{k}: {v}", flush=True)
+    print(f"Average score: {avg}", flush=True)
+    print("====================================", flush=True)
